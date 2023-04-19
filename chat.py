@@ -17,7 +17,7 @@ def _parse_args():
     args.add_argument("--debug-dump", action="store_true", default=False)
     args.add_argument("--artifact-path", type=str, default="dist")
     args.add_argument("--model", type=str, default="vicuna-7b-v1")
-    args.add_argument("--max-gen-len", type=int, default=128)
+    args.add_argument("--max-gen-len", type=int, default=2048)
     args.add_argument("--run-torch-model", action="store_true", default=False)
     parsed = args.parse_args()
     parsed.model_path = os.path.join(parsed.artifact_path, "models", parsed.model)
@@ -57,9 +57,9 @@ class ModelWrapper:
         start_pos = len(prompt_tokens)
         for cur_pos in range(start_pos, total_len):
             if cur_pos == start_pos:
-                logits = self.model(tokens[:, :cur_pos], cur_pos, clear_cache=True)
+                logits = self.model(tokens[:, :cur_pos])
             else:
-                logits = self.model(tokens[:, cur_pos - 1 : cur_pos], cur_pos)
+                logits = self.model(tokens[:, cur_pos - 1 : cur_pos])
             logits = logits[:, -1, :]
             if temperature > 0:
                 probs = torch.softmax(logits / temperature, dim=-1)
@@ -113,8 +113,8 @@ def chat(model_wrapper, args):
 
         conv.append_message(conv.roles[0], inp)
         conv.append_message(conv.roles[1], None)
-        prompt = conv.get_prompt()
-
+        prompt = conv.get_prompt_unprocessed()
+        print("prompt:", prompt)
         print(f"{conv.roles[1]}: ", end="", flush=True)
         pre = 0
         for outputs in model_wrapper.generate(
@@ -154,16 +154,17 @@ def get_tvm_model(args):
 
         def __init__(self) -> None:
             self.kv_cache = None
+            self.kv_cache_length = 0
             self.new_cache()
 
         def forward(
-            self, inputs: torch.Tensor, cur_pos: int, clear_cache: bool = False
+            self, inputs: torch.Tensor
         ) -> torch.Tensor:
-            if clear_cache:
-                self.new_cache()
             inputs = tvm.nd.array(inputs.numpy(), device=device)
-            seq_len_shape = tvm.runtime.ShapeTuple([cur_pos])
+            self.kv_cache_length+=inputs.shape[1]
+            seq_len_shape = tvm.runtime.ShapeTuple([self.kv_cache_length])
             if inputs.shape[1] > 1:
+                print("kv_cache_length:", self.kv_cache_length)
                 logits, kv_cache = vm["encoding"](
                     inputs, seq_len_shape, self.kv_cache, const_params
                 )
